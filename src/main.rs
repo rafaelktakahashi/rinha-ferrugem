@@ -1,16 +1,9 @@
 mod env_reader;
-mod hoard;
 mod model;
 
-use std::{
-    env,
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use std::{env, time::Duration};
 
-use chrono::{TimeZone, Utc};
-use derive_more::{Display, Error};
-use hoard::Hoard;
+use chrono::Utc;
 use model::{ExtSd, Tr, TrReq, TrRes};
 use sqlx::{postgres::PgPoolOptions, Pool, Postgres, Row};
 
@@ -53,33 +46,8 @@ async fn main() -> std::io::Result<()> {
 
     HttpServer::new(move || {
         App::new()
-            .app_data(
-                // Custom handling of json errors. We want to specifically
-                // fail with a 422 when a field that wasn't supposed to be
-                // null, was null. All other Json errors should use 400.
-                // In all cases, we send back no content at all.
-                web::JsonConfig::default().error_handler(|json_payload_error, _| {
-                    // Were we want to fail specifically with error code 422 when
-                    // a required field is null or missing. Our custom error also
-                    // doesn't send anything back in the body.
-                    let error_text = json_payload_error.to_string();
-
-                    if error_text.starts_with("Json deserialize error: invalid type: null")
-                        || error_text.starts_with("Json deserialize error: missing field")
-                    {
-                        return actix_web::error::Error::from(SuppressedNullError {
-                            status_code: actix_web::http::StatusCode::from_u16(422).unwrap(),
-                        });
-                    } else {
-                        return actix_web::error::Error::from(SuppressedNullError {
-                            status_code: actix_web::http::StatusCode::from_u16(400).unwrap(),
-                        });
-                    }
-                }),
-            )
             .app_data(web::Data::new(AppData {
                 db_pool: db_pool.clone(),
-                eternity: Arc::new(Mutex::new(Hoard::new())),
             }))
             .service(tr)
             .service(ex)
@@ -90,28 +58,9 @@ async fn main() -> std::io::Result<()> {
     .await
 }
 
-/// An error that carries no message and is only meant to send back the
-/// http code we want on certain errors.
-#[derive(Debug, Display, Error)]
-struct SuppressedNullError {
-    status_code: actix_web::http::StatusCode,
-}
-
-impl actix_web::ResponseError for SuppressedNullError {
-    fn status_code(&self) -> actix_web::http::StatusCode {
-        self.status_code
-    }
-
-    fn error_response(&self) -> HttpResponse<actix_web::body::BoxBody> {
-        // Send just the status code and nothing else at all.
-        HttpResponse::build(self.status_code).body(actix_web::body::MessageBody::boxed(""))
-    }
-}
-
 struct AppData {
     /// Reference to the pool. The pool is essentially an Arc.
     db_pool: Pool<Postgres>,
-    eternity: Arc<Mutex<Hoard>>,
 }
 
 #[post("/clientes/{id}/transacoes")]
@@ -234,25 +183,10 @@ async fn ex(path_params: web::Path<String>, app_data: web::Data<AppData>) -> imp
         }
     };
 
-    // Now, we could get the whole list of transactions with the following query:
-    // SELECT VALOR, TIPO, DESCRICAO, W FROM T WHERE U_ID=$1 ORDER BY W DESC;
-    // However, that would always fetch everything all the time. That could slow
-    // things down when there are huge amounts of records in the database.
-    // Since this code needs to return the whole lists all the time and the lists
-    // are guaranteed to never be edited, we can cache every single record that we
-    // ever read from the database, and only fetch records newer than those.
-
-    let mut d_vt = match app_data.eternity.lock() {
-        Ok(cache) => cache.checkout(id as usize - 0x41),
-        Err(_) => (Utc.timestamp_micros(0).unwrap(), vec![]),
-    };
-
-    // Get list of transactions for the user, but only those we don't have.
-    let mut ts: Vec<Tr> = match sqlx::query(
-        "SELECT VALOR, TIPO, DESCRICAO, W FROM T WHERE U_ID=$1 AND W > $2 ORDER BY W DESC;",
+    let ts: Vec<Tr> = match sqlx::query(
+        "SELECT VALOR, TIPO, DESCRICAO, W FROM T WHERE U_ID=$1 ORDER BY W DESC LIMIT 10;",
     )
     .bind(id)
-    .bind(d_vt.0)
     .fetch_all(&mut *tx)
     .await
     {
@@ -270,14 +204,6 @@ async fn ex(path_params: web::Path<String>, app_data: web::Data<AppData>) -> imp
             return HttpResponse::InternalServerError().finish();
         }
     };
-
-    // ts has new items that aren't in the cache. Put them there, then combine
-    // the two lists to return.
-    if let Ok(mut c) = app_data.eternity.lock() {
-        c.stash(id as usize - 0x41, &ts);
-    }
-
-    ts.append(&mut d_vt.1);
 
     // Always return 200
     HttpResponse::Ok().json(model::ExtRes {
