@@ -1,13 +1,19 @@
 mod env_reader;
 mod model;
+mod user_id_cache;
 
-use std::{env, time::Duration};
+use std::{
+    env,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use chrono::Utc;
 use model::{ExtSd, Tr, TrReq, TrRes};
 use sqlx::{postgres::PgPoolOptions, Pool, Postgres, Row};
 
 use actix_web::{get, post, web, App, HttpResponse, HttpServer, Responder};
+use user_id_cache::UserIdCache;
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
@@ -44,10 +50,20 @@ async fn main() -> std::io::Result<()> {
 
     let keep_alive = env_reader::read_env_u32("KEEPALIVE_DURATION", 15000);
 
+    // Query the users table to get the list of user ids at the start of execution.
+    let user_ids: Vec<i8> = match sqlx::query("SELECT ID FROM U;").fetch_all(&db_pool).await {
+        Ok(rows) => rows.iter().map(|u| u.get::<i8, usize>(0)).collect(),
+        Err(e) => {
+            println!("{e}");
+            Vec::new()
+        }
+    };
+
     HttpServer::new(move || {
         App::new()
             .app_data(web::Data::new(AppData {
                 db_pool: db_pool.clone(),
+                id_cache: Arc::new(Mutex::new(UserIdCache::new(&user_ids))),
             }))
             .service(tr)
             .service(ex)
@@ -61,6 +77,8 @@ async fn main() -> std::io::Result<()> {
 struct AppData {
     /// Reference to the pool. The pool is essentially an Arc.
     db_pool: Pool<Postgres>,
+    /// In-memory cache of which user ids exist.
+    id_cache: Arc<Mutex<UserIdCache>>,
 }
 
 #[post("/clientes/{id}/transacoes")]
@@ -69,28 +87,15 @@ async fn tr(
     tr: web::Json<TrReq>,
     app_data: web::Data<AppData>,
 ) -> impl Responder {
-    // Validate id, must be 1, 2, 3, 4 or 5, as no other
-    // possible ids can be added during the program's execution.
-    let id = path_params.into_inner();
-    // Is this cheating? Who knows. The fixed existence of these
-    // five ids is literally a requirement, so I'm optimizing
-    // around it. I thought about having a separate table for each
-    // one, but that may be too shady for too little gain.
-    let id: i8 = match id.as_str() {
-        "1" => 0x41,
-        "2" => 0x42,
-        "3" => 0x43,
-        "4" => 0x44,
-        "5" => 0x45,
-        _ => {
-            return HttpResponse::NotFound().finish();
-        }
+    let id = match validate_id_exists(path_params.into_inner().as_str(), &app_data).await {
+        x if x >= 0 => x,
+        _ => return HttpResponse::NotFound().finish(),
     };
 
     // Next, validate the string length.
     // We have two options:
     // 1. Be a good American and ignore the niche category of "foreign".
-    // Only ASCII matters. One character is one byte.
+    //    Only ASCII matters. One character is one byte.
     // 2. Do it right and properly handle any UTF-8 string.
     //
     // We do it the right way because the performance penalty is minimal.
@@ -106,11 +111,11 @@ async fn tr(
         return HttpResponse::UnprocessableEntity().finish();
     }
 
-    // This function does everything in one and returns the row of U
-    // when successful and zero rows otherwise.
+    // This function does everything in one and returns the row of U when
+    // successful and zero rows otherwise.
     let sd = match sqlx::query("SELECT LIMITE, SALDO FROM insert_into_t($1, $2, $3, $4);")
         .bind(id) // Byte that will be mapped to the "char" type
-        .bind(tr.valor as i32) // Value as signed integer; unsigned was used for serde validation
+        .bind(tr.valor as i32) // Value as signed integer; unsigned was declared for serde validation
         .bind(tr.tipo == 'c') // True for 'c', false for 'd'
         .bind(&tr.descricao) // String that will be mapped to the TEXT type
         .fetch_optional(&app_data.db_pool)
@@ -141,16 +146,9 @@ async fn tr(
 
 #[get("/clientes/{id}/extrato")]
 async fn ex(path_params: web::Path<String>, app_data: web::Data<AppData>) -> impl Responder {
-    let id = path_params.into_inner();
-    let id: i8 = match id.as_str() {
-        "1" => 0x41,
-        "2" => 0x42,
-        "3" => 0x43,
-        "4" => 0x44,
-        "5" => 0x45,
-        _ => {
-            return HttpResponse::NotFound().finish();
-        }
+    let id = match validate_id_exists(path_params.into_inner().as_str(), &app_data).await {
+        x if x >= 0 => x,
+        _ => return HttpResponse::NotFound().finish(),
     };
 
     let mut tx = match app_data.db_pool.begin().await {
@@ -210,4 +208,66 @@ async fn ex(path_params: web::Path<String>, app_data: web::Data<AppData>) -> imp
         saldo: bl,
         ultimas_transacoes: ts,
     })
+}
+
+// Don't do this in serious code, seriously.
+type FalseOrU7 = i8;
+
+/// Check if the id exists in the database.
+///
+/// In case the id exists in the database, this function will return
+/// the parsed byte as a positive number.
+/// In case the id doesn't exist in the database, or any other error
+/// occurred (such as an error parsing the string), this will return
+/// a negative value.
+async fn validate_id_exists(id: &str, app_data: &web::Data<AppData>) -> FalseOrU7 {
+    let _false = -1;
+
+    // First, parse the number.
+    let parsed_byte: i8 = match id.parse() {
+        Ok(b) => b,
+        // Anything not representable by a byte is not in the database, because
+        // the id column's type is one byte long.
+        Err(_) => return _false,
+    };
+    // We store the byte in the database with 64 added to it,
+    // for no particular reason.
+    let u_id = parsed_byte + 0x40;
+
+    // The return value of this function _looks_ like a boolean, but
+    // actually contains the parsed id in case of success.
+    let _true = u_id;
+
+    // Check if the user id cache knows about this. If it does, we skip a
+    // database check.
+    let user_cache = match app_data.id_cache.lock() {
+        Ok(z) => z,
+        Err(_) => return _false, // If the mutex fails, just guess the answer.
+    };
+
+    match user_cache.check_id(u_id) {
+        user_id_cache::UserIdCacheResult::Exists => {
+            return _true;
+        }
+        user_id_cache::UserIdCacheResult::DoesNotExist => {
+            return _false;
+        }
+        user_id_cache::UserIdCacheResult::CacheDoesNotKnow => {
+            "↘️";
+        }
+    }
+
+    // Getting here means the cache doesn't know, because it is currently
+    // invalidated.
+    // In that case, we have to query the database to check if the id exists.
+    match sqlx::query("SELECT 1 FROM U WHERE ID=$1;")
+        .fetch_optional(&app_data.db_pool)
+        .await
+    {
+        Ok(opt) => match opt {
+            Some(_) => _true,
+            None => _false,
+        },
+        Err(_) => _false, // Guess false
+    }
 }
