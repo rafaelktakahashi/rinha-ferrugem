@@ -92,6 +92,19 @@ async fn tr(
         _ => return HttpResponse::NotFound().finish(),
     };
 
+    // Type can only be 'c' or 'd'
+    if tr.tipo != 'd' && tr.tipo != 'c' {
+        return HttpResponse::UnprocessableEntity().finish();
+    }
+
+    // The reason why TrReq has an optional string is because that's the
+    // simplest way to explicitly fail with 422 (and not 400) when it's
+    // missing.
+    let descricao = match &tr.descricao {
+        Some(s) => s,
+        None => return HttpResponse::UnprocessableEntity().finish(),
+    };
+
     // Next, validate the string length.
     // We have two options:
     // 1. Be a good American and ignore the niche category of "foreign".
@@ -101,12 +114,12 @@ async fn tr(
     // We do it the right way because the performance penalty is minimal.
     //
     // Empty description is always disallowed.
-    if tr.descricao.is_empty()
+    if descricao.is_empty()
     //  More than 40 bytes is always disallowed. Each character is 1 to 4 bytes.
-        || tr.descricao.len() > 40
+        || descricao.len() > 40
     //  Lastly, count the characters. This requires an iteration through the
     //  string, but that's fine because here the string is known to be small.
-        || tr.descricao.chars().count() > 10
+        || descricao.chars().count() > 10
     {
         return HttpResponse::UnprocessableEntity().finish();
     }
@@ -117,7 +130,7 @@ async fn tr(
         .bind(id) // Byte that will be mapped to the "char" type
         .bind(tr.valor as i32) // Value as signed integer; unsigned was declared for serde validation
         .bind(tr.tipo == 'c') // True for 'c', false for 'd'
-        .bind(&tr.descricao) // String that will be mapped to the TEXT type
+        .bind(&descricao) // String that will be mapped to the TEXT type
         .fetch_optional(&app_data.db_pool)
         .await
     {

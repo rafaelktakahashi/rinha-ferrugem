@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize, Serializer};
 pub struct TrReq {
     pub valor: u32,
     pub tipo: char, // received as char (any Unicode codepoint)
-    pub descricao: String,
+    pub descricao: Option<String>,
 }
 
 #[derive(Serialize, Debug)]

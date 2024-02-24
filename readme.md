@@ -3,7 +3,7 @@
 ## Para rodar o projeto
 
 ```bash
-docker build -t ferrugem_rust .
+docker build -t ferrugem_rust -f Dockerfile.rust .
 docker-compose up -d
 ```
 
