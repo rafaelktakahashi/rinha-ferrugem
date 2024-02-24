@@ -164,6 +164,9 @@ async fn ex(path_params: web::Path<String>, app_data: web::Data<AppData>) -> imp
         _ => return HttpResponse::NotFound().finish(),
     };
 
+    // Get a transaction and reuse it. We'll need two queries.
+    // I guess I could've made a function to perform the two (unrelated) queries at once,
+    // but that's a _weird_ optimization and it wasn't really necessary.
     let mut tx = match app_data.db_pool.begin().await {
         Ok(tx) => tx,
         Err(e) => {
@@ -173,10 +176,13 @@ async fn ex(path_params: web::Path<String>, app_data: web::Data<AppData>) -> imp
     };
 
     // Get balance for the user. This is always necessary.
-    let bl = match sqlx::query("SELECT LIMITE, SALDO FROM U WHERE U.ID = $1;")
-        .bind(id)
-        .fetch_optional(&mut *tx)
-        .await
+    let bl = match sqlx::query(
+        "SELECT LIMITE, SALDO, pg_advisory_xact_lock($2) FROM U WHERE U.ID = $1;",
+    )
+    .bind(id)
+    .bind(id as i64)
+    .fetch_optional(&mut *tx)
+    .await
     {
         Ok(row) => match row {
             Some(row) => ExtSd {
@@ -195,9 +201,10 @@ async fn ex(path_params: web::Path<String>, app_data: web::Data<AppData>) -> imp
     };
 
     let ts: Vec<Tr> = match sqlx::query(
-        "SELECT VALOR, TIPO, DESCRICAO, W FROM T WHERE U_ID=$1 ORDER BY W DESC LIMIT 10;",
+        "SELECT VALOR, TIPO, DESCRICAO, W, pg_advisory_xact_lock($2) FROM T WHERE U_ID=$1 ORDER BY W DESC LIMIT 10;",
     )
     .bind(id)
+    .bind(id as i64)
     .fetch_all(&mut *tx)
     .await
     {

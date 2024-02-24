@@ -4,8 +4,8 @@ services:
     image: ferrugem_rust:latest
     environment:
       DATABASE_URL: postgres://postgres:999@db:5432/postgres?schema=public&sslmode=disable
-      MAX_DB_CONNECTIONS: 290
-      KEEPALIVE_DURATION: 2000
+      MAX_DB_CONNECTIONS: 3
+      KEEPALIVE_DURATION: 2
       DB_POOL_TIMEOUT: 58000
       PORT: 3000
     depends_on:
@@ -25,8 +25,8 @@ services:
     image: ferrugem_rust:latest
     environment:
       DATABASE_URL: postgres://postgres:999@db:5432/postgres?schema=public&sslmode=disable
-      MAX_DB_CONNECTIONS: 290
-      KEEPALIVE_DURATION: 2000
+      MAX_DB_CONNECTIONS: 3
+      KEEPALIVE_DURATION: 2
       DB_POOL_TIMEOUT: 58000
       PORT: 3000
     depends_on:

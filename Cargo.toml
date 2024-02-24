@@ -1,6 +1,6 @@
 [package]
 name = "ferrugem"
-version = "0.2.0"
+version = "1.0.0"
 authors = ["Rafael K. Takahashi"]
 edition = "2021"
 description = "Server rust mínimo para a rinha de backend 2, 2024."
@@ -19,5 +19,4 @@ chrono = { version = "0.4", features = ["serde"] }
 codegen-units = 1
 lto = true
 panic = "abort"
-# [profile.release]
-# debug = true
+debug = true
