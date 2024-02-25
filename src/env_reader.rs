@@ -2,6 +2,9 @@ use std::{borrow::Cow, env};
 
 /// Read an environment variable and return it as a clone-on-write pointer,
 /// since it can also return a default value if the variable is not found.
+///
+/// (In reality, this "optimization" with cows matters very little since
+/// variables are read once at startup.)
 pub fn read_env_str<'a>(name: &str, default: &'a str) -> Cow<'a, str> {
     match env::var(name) {
         Ok(value) => Cow::Owned(value),

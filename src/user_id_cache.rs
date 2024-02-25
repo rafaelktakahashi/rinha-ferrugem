@@ -14,7 +14,12 @@ pub struct UserIdCache {
     /// Set when the ids vector contains all numbers between min
     /// and max. Usually "contiguous" refers to memory addresses,
     /// but here it only says whether the vector is "sparse".
+    /// For example, min=3 and max=10 when contiguous is true means
+    /// that all ids from 3 to 10, inclusive, exist in the database.
     contiguous: bool,
+    /// The vector itself, containing exactly which ids exist in
+    /// the database. We're using one byte to store the id, since
+    /// few people exist.
     ids: Vec<i8>,
 }
 
@@ -90,6 +95,18 @@ impl UserIdCache {
 
 /// A not very efficient function that checks if a vector contains
 /// all values between a minimum and a maximum, inclusive.
+/// This assumes that doing this only once when the cache is refreshed
+/// is worth it because it may avoid an iteration when checking against
+/// the vector. However, this depends on whether we expect the vector
+/// to be contiguous often.
 fn contains_all_in_range(values: &Vec<i8>, min: i8, max: i8) -> bool {
     (min..=max).all(|it| values.contains(&it))
 } // We could make this generic if std::iter::Step was stable.
+
+//
+//
+//
+//
+//
+//
+// ...e do bem, se algum houve, as saudades.

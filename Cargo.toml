@@ -19,4 +19,4 @@ chrono = { version = "0.4", features = ["serde"] }
 codegen-units = 1
 lto = true
 panic = "abort"
-debug = true
+debug = false

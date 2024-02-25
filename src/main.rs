@@ -15,6 +15,12 @@ use sqlx::{postgres::PgPoolOptions, Pool, Postgres, Row};
 use actix_web::{get, post, web, App, HttpResponse, HttpServer, Responder};
 use user_id_cache::UserIdCache;
 
+/// The code in this program has been written without much regard to
+/// good architectural practices. It is, in a way, the minimal program
+/// that I could write to do what it needs to, fast, and without being
+/// a horrible mess. Hopefully commenting it generously makes it less
+/// difficult to read.
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     let port = match env::var("PORT") {
@@ -25,7 +31,8 @@ async fn main() -> std::io::Result<()> {
             String::from("7878")
         }
     };
-    let address = String::from("0.0.0.0:") + &port; // Moves the string
+    // Note that 127.0.0.1 doesn't work with docker compose.
+    let address = String::from("0.0.0.0:") + &port;
     println!("Server will listen on {}", &address);
 
     let db_connection_string =
@@ -35,6 +42,8 @@ async fn main() -> std::io::Result<()> {
 
     let db_pool_timeout = env_reader::read_env_u32("DB_POOL_TIMEOUT", 5000);
 
+    // This pool is Send, Sync and Clone. It's a reference-counted handle that will
+    // be available to all handlers.
     let db_pool = match PgPoolOptions::new()
         .max_connections(max_db_connections)
         .acquire_timeout(Duration::from_millis(db_pool_timeout as u64))
@@ -51,6 +60,7 @@ async fn main() -> std::io::Result<()> {
     let keep_alive = env_reader::read_env_u32("KEEPALIVE_DURATION", 15000);
 
     // Query the users table to get the list of user ids at the start of execution.
+    // We do this to cache which ids exist.
     let user_ids: Vec<i8> = match sqlx::query("SELECT ID FROM U;").fetch_all(&db_pool).await {
         Ok(rows) => rows.iter().map(|u| u.get::<i8, usize>(0)).collect(),
         Err(e) => {
@@ -80,6 +90,16 @@ struct AppData {
     /// In-memory cache of which user ids exist.
     id_cache: Arc<Mutex<UserIdCache>>,
 }
+
+// In actix, we describe the things each handler needs as function parameters,
+// and then actix figures that out and passes the correct values.
+// Rust doesn't have reflection (since that's slow and bad in many ways), and
+// instead uses macros (like #[post]) to allow for code generation at
+// compile time. Macro code analyses the functions here and generates the
+// necessary boilerplace.
+// Parameters like web::Path<T> are called extractors. Extractors have a
+// from_request method so that they know how to obtain data from a request,
+// and we can write our own if necessary.
 
 #[post("/clientes/{id}/transacoes")]
 async fn tr(
@@ -118,7 +138,7 @@ async fn tr(
     //  More than 40 bytes is always disallowed. Each character is 1 to 4 bytes.
         || descricao.len() > 40
     //  Lastly, count the characters. This requires an iteration through the
-    //  string, but that's fine because here the string is known to be small.
+    //  string, but that's fine because at this point the string is known to be small.
         || descricao.chars().count() > 10
     {
         return HttpResponse::UnprocessableEntity().finish();
@@ -127,7 +147,7 @@ async fn tr(
     // This function does everything in one and returns the row of U when
     // successful and zero rows otherwise.
     let sd = match sqlx::query("SELECT LIMITE, SALDO FROM insert_into_t($1, $2, $3, $4);")
-        .bind(id) // Byte that will be mapped to the "char" type
+        .bind(id) // Byte that will be mapped to the postgres "char" type
         .bind(tr.valor as i32) // Value as signed integer; unsigned was declared for serde validation
         .bind(tr.tipo == 'c') // True for 'c', false for 'd'
         .bind(&descricao) // String that will be mapped to the TEXT type
@@ -175,7 +195,10 @@ async fn ex(path_params: web::Path<String>, app_data: web::Data<AppData>) -> imp
         }
     };
 
-    // Get balance for the user. This is always necessary.
+    // Get balance for the user. We expect the lock (pg_advisory_xact_lock) to prevent
+    // other concurrent operations for the same user, without locking the table since
+    // operations related to other users are perfectly fine to occur at the same time.
+    // Our function that inserts a new transaction also attempts to acquire the lock.
     let bl = match sqlx::query(
         "SELECT LIMITE, SALDO, pg_advisory_xact_lock($2) FROM U WHERE U.ID = $1;",
     )
@@ -240,6 +263,9 @@ type FalseOrU7 = i8;
 /// In case the id doesn't exist in the database, or any other error
 /// occurred (such as an error parsing the string), this will return
 /// a negative value.
+///
+/// We expect this function to avoid querying the database when cached
+/// data is available.
 async fn validate_id_exists(id: &str, app_data: &web::Data<AppData>) -> FalseOrU7 {
     let _false = -1;
 
@@ -251,7 +277,8 @@ async fn validate_id_exists(id: &str, app_data: &web::Data<AppData>) -> FalseOrU
         Err(_) => return _false,
     };
     // We store the byte in the database with 64 added to it,
-    // for no particular reason.
+    // for no particular reason. It just makes it simpler to
+    // declare the first few users as having id 'A', 'B', etc.
     let u_id = parsed_byte + 0x40;
 
     // The return value of this function _looks_ like a boolean, but
@@ -291,3 +318,7 @@ async fn validate_id_exists(id: &str, app_data: &web::Data<AppData>) -> FalseOrU
         Err(_) => _false, // Guess false
     }
 }
+
+// 諸行無常 // All is impermanent.
+// 一切皆苦 // All is unsatisfactory.
+// 諸法無我 // All is without self.
