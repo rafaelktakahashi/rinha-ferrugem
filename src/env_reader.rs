@@ -37,3 +37,11 @@ pub fn read_env_u32(name: &str, default: u32) -> u32 {
         }
     }
 }
+
+// 恥の多い生涯を送って来ました。
+// 自分には、人間の生活というものが見当つかないのです。
+//
+// A minha foi uma vida cheia de desgraças.
+// Não faço ideia de como é viver uma vida de gente.
+//
+// Osamu Dazai, "Ningen Shikkaku"
