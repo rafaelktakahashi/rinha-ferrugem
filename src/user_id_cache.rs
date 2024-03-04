@@ -5,10 +5,10 @@
 /// insert or delete happens in it), then the cache should be
 /// invalidated until all users are searched again.
 pub struct UserIdCache {
-    /// Largest of all cached ids. If this is larger than min_id,
+    /// Smallest of all cached ids. If this is larger than min_id,
     /// that means the cache is currently invalidated.
     min_id: i8,
-    /// Smallest of all cached ids. If this is smaller than max_id,
+    /// Largest of all cached ids. If this is smaller than max_id,
     /// that means the cache is currently invalidated.
     max_id: i8,
     /// Set when the ids vector contains all numbers between min
